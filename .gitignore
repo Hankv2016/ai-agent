@@ -4,3 +4,4 @@ __pycache__/
 conversation.json
 conversations/
 settings.json
+gui_crash.log

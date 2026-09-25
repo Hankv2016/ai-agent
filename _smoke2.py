@@ -73,6 +73,34 @@ try:
         assert json.load(f)["title"] == "改名了"
     print("RENAME_OK")
 
+    # 7) _content_to_text 兼容 list / str
+    assert w._content_to_text([
+        {"type": "text", "text": "abc"},
+        {"type": "image_url", "image_url": {"url": "u"}},
+    ]) == "abc"
+    assert w._content_to_text("纯文本") == "纯文本"
+    assert w._content_to_text("") == ""
+    # 8) 含图片的会话：保存 + 重绘不崩（修复 list content 的 strip 崩溃）
+    w.history = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "看图"},
+            {"type": "image_url", "image_url": {"url": "https://x/y.png", "detail": "auto"}},
+        ]},
+        {"role": "assistant", "content": "好的"},
+    ]
+    w._save_current_session()
+    w._redraw_all()
+    print("IMG_SESSION_OK")
+
+    # 9) 图片 key 渲染 + 缓存命中注册（不崩）
+    key = w._img_key("https://x/ok.png")
+    from PyQt5.QtGui import QImage
+    w._img_data[key] = QImage(8, 8, QImage.Format_RGB32)
+    w.outputEdit.append(f'<p><img src="{key}" width="220" /></p>')
+    w._apply_image(key)
+    w._redraw_all()
+    print("REMOTE_IMG_OK")
+
     print("ALL_OK")
 finally:
     shutil.rmtree(tmp, ignore_errors=True)

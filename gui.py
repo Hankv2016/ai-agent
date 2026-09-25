@@ -5,6 +5,10 @@ import re
 import json
 import time
 import uuid
+import html
+import threading
+import hashlib
+import urllib.request
 from PyQt5 import uic
 from PyQt5.QtWidgets import (
     QApplication,
@@ -13,8 +17,8 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QInputDialog,
 )
-from PyQt5.QtCore import QThread, pyqtSignal
-from PyQt5.QtGui import QTextCursor
+from PyQt5.QtCore import QThread, pyqtSignal, QUrl, QMetaObject, Qt, Q_ARG, pyqtSlot
+from PyQt5.QtGui import QTextCursor, QDesktopServices, QImage, QTextDocument
 
 from client import AIClient, load_env_file
 import mdrender
@@ -27,6 +31,10 @@ SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 LEGACY_HISTORY_FILE = os.path.join(BASE_DIR, "conversation.json")
 # 会话目录默认值（用户可在 GUI 中修改）
 DEFAULT_AUTOSAVE_DIR = os.path.join(BASE_DIR, "conversations")
+
+import faulthandler
+_fault_fd = open(os.path.join(BASE_DIR, "gui_crash.log"), "a", encoding="utf-8", errors="replace")
+faulthandler.enable(file=_fault_fd)
 
 
 # ---------- 导入解析辅助（模块级，便于测试） ----------
@@ -152,6 +160,9 @@ class MainWindow(QMainWindow):
         self._ai_doc_pos = None
         self._last_render = 0.0
         self._pending_user_content = None  # 进行中的用户消息（str 或 OpenAI content 数组）
+        self._img_data = {}            # key -> QImage（已下载成功的图片）
+        self._img_downloading = set()  # 正在下载的 key
+        self._img_url_to_key = {}      # url -> key
 
         self._bind_widgets()
         self._migrate_legacy_if_needed()
@@ -236,7 +247,7 @@ class MainWindow(QMainWindow):
         title = ""
         for m in messages:
             if m.get("role") == "user":
-                title = (m.get("content") or "").strip().replace("\n", " ")[:24]
+                title = MainWindow._content_to_text(m.get("content")).strip().replace("\n", " ")[:24]
                 break
         return {
             "id": sid,
@@ -297,6 +308,8 @@ class MainWindow(QMainWindow):
         self.sessionList.itemDoubleClicked.connect(self.on_rename_session)
         self.setAcceptDrops(True)
 
+        self.outputEdit.setOpenLinks(False)
+        self.outputEdit.anchorClicked.connect(self._on_anchor_clicked)
         self.outputEdit.setLineWrapMode(self.outputEdit.WidgetWidth)
 
     def _init_status(self):
@@ -328,7 +341,7 @@ class MainWindow(QMainWindow):
         if not sess.get("title") or sess["title"] == "新对话":
             for m in self.history:
                 if m.get("role") == "user":
-                    sess["title"] = (m.get("content") or "").strip().replace("\n", " ")[:24] or "新对话"
+                    sess["title"] = self._content_to_text(m.get("content")).strip().replace("\n", " ")[:24] or "新对话"
                     break
         self._write_session_file(sess)
 
@@ -468,11 +481,21 @@ class MainWindow(QMainWindow):
                 parts = []
                 for msg in self.history:
                     role = msg.get("role")
-                    content = msg.get("content") or ""
+                    content = msg.get("content")
+                    text = self._content_to_text(content)
+                    if isinstance(content, list):
+                        imgs = [
+                            p["image_url"]["url"] for p in content
+                            if isinstance(p, dict) and p.get("type") == "image_url"
+                        ]
+                        if imgs:
+                            text = (text + "\n" if text else "") + "\n".join(
+                                f"[图片: {u}]" for u in imgs
+                            )
                     if role == "user":
-                        parts.append("## 你\n\n" + content + "\n")
+                        parts.append("## 你\n\n" + text + "\n")
                     elif role == "assistant":
-                        parts.append("## AI\n\n" + content + "\n")
+                        parts.append("## AI\n\n" + text + "\n")
                 with open(path, "w", encoding="utf-8") as f:
                     f.write("# 对话记录\n\n" + "\n".join(parts))
             self.statusBar().showMessage(f"已导出: {os.path.basename(path)}")
@@ -500,6 +523,15 @@ class MainWindow(QMainWindow):
         for u in urls:
             parts.append({"type": "image_url", "image_url": {"url": u, "detail": "auto"}})
         return parts if urls else prompt
+
+    @staticmethod
+    def _content_to_text(content):
+        if isinstance(content, list):
+            return "".join(
+                p.get("text", "") for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            )
+        return content or ""
 
     def on_collapse(self):
         self.leftPanel.hide()
@@ -562,10 +594,57 @@ class MainWindow(QMainWindow):
         if text:
             self.outputEdit.append(mdrender.markdown_to_html(text) or "<p>&nbsp;</p>")
         for img in imgs:
+            key = self._img_key(img)
+            # 内嵌缩略图用本地 key 作 src（不走 QTextBrowser 原生 https 加载），
+            # 图片由 _download_image_async 下载后 addResource 注册；附可点击原图链接
+            self.outputEdit.append(f'<p><img src="{key}" width="220" /></p>')
             self.outputEdit.append(
-                f'<p><font color="#888">[图片] <a href="{img}">{img}</a></font></p>'
+                f'<p><font color="#888">[图片] <a href="{html.escape(img, quote=True)}">'
+                f'{html.escape(img, quote=True)}</a></font></p>'
             )
+            self._download_image_async(img, key)
         self._scroll_bottom()
+
+    # ---------------- 图片下载（绕过 QTextBrowser 原生 https 加载，规避双重加载/SSL 缺失）----------------
+    def _img_key(self, url):
+        if url not in self._img_url_to_key:
+            self._img_url_to_key[url] = "imgcache://" + hashlib.md5(url.encode("utf-8")).hexdigest()
+        return self._img_url_to_key[url]
+
+    def _download_image_async(self, url, key):
+        if key in self._img_data:
+            self._apply_image(key)
+            return
+        if key in self._img_downloading:
+            return
+        self._img_downloading.add(key)
+        threading.Thread(target=self._fetch_image, args=(url, key), daemon=True).start()
+
+    def _fetch_image(self, url, key):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = resp.read()
+            img = QImage()
+            if img.loadFromData(data) and not img.isNull():
+                self._img_data[key] = img
+                QMetaObject.invokeMethod(self, "_apply_image", Qt.QueuedConnection, Q_ARG(str, key))
+        except Exception:
+            pass
+        finally:
+            self._img_downloading.discard(key)
+
+    @pyqtSlot(str)
+    def _apply_image(self, key):
+        if key in self._img_data:
+            self.outputEdit.document().addResource(
+                QTextDocument.ImageResource, QUrl(key), self._img_data[key]
+            )
+            doc = self.outputEdit.document()
+            doc.markContentsDirty(0, doc.characterCount())
+
+    def _on_anchor_clicked(self, url):
+        QDesktopServices.openUrl(url)
 
     def _begin_ai(self):
         self.outputEdit.append('<p><font color="#0a8043"><b>AI：</b></font></p>')
@@ -604,32 +683,36 @@ class MainWindow(QMainWindow):
 
     # ---------------- 槽函数：对话 ----------------
     def on_send(self):
-        prompt = self.inputEdit.text().strip()
         if self.thread is not None and self.thread.isRunning():
             return
+        try:
+            prompt = self.inputEdit.text().strip()
+            urls = self._parse_image_urls(self.imageEdit.text())
+            if not prompt and not urls:
+                return
 
-        urls = self._parse_image_urls(self.imageEdit.text())
-        if not prompt and not urls:
-            return
+            # 按 OpenAI 多模态规范构建 user 消息：纯文本保持 str，含图片则为 content 数组
+            user_content = self._build_user_content(prompt, urls)
 
-        # 按 OpenAI 多模态规范构建 user 消息：纯文本保持 str，含图片则为 content 数组
-        user_content = self._build_user_content(prompt, urls)
+            self.inputEdit.clear()
+            self.imageEdit.clear()
+            self._pending_user_content = user_content
+            self._append_user(user_content)
+            self._begin_ai()
+            self._buf = ""
+            self._set_busy(True)
+            self.statusBar().showMessage("正在请求...")
 
-        self.inputEdit.clear()
-        self.imageEdit.clear()
-        self._pending_user_content = user_content
-        self._append_user(user_content)
-        self._begin_ai()
-        self._buf = ""
-        self._set_busy(True)
-        self.statusBar().showMessage("正在请求...")
-
-        self.thread = RequestThread(user_content, self._current_messages())
-        self.thread.chunk.connect(self._on_chunk)
-        self.thread.finished_ok.connect(self._on_success)
-        self.thread.failed.connect(self._on_error)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.start()
+            self.thread = RequestThread(user_content, self._current_messages())
+            self.thread.chunk.connect(self._on_chunk)
+            self.thread.finished_ok.connect(self._on_success)
+            self.thread.failed.connect(self._on_error)
+            self.thread.finished.connect(self.thread.deleteLater)
+            self.thread.start()
+        except Exception as e:
+            import traceback
+            self._set_busy(False)
+            QMessageBox.critical(self, "发送失败", traceback.format_exc()[-2000:])
 
     def _on_chunk(self, delta):
         self._buf += delta
@@ -679,6 +762,17 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        import traceback
+        tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            QMessageBox.critical(None, "程序错误", tb[-2000:])
+        except Exception:
+            pass
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+    sys.excepthook = _excepthook
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
