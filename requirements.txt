@@ -1,0 +1,8 @@
+# AI 对话客户端依赖清单
+# 安装：pip install -r requirements.txt
+
+# 图形界面（PyQt5）
+PyQt5>=5.15
+
+# OpenAI 兼容 API 客户端（任意 base_url 的中转/本地模型均可）
+openai>=1.0
