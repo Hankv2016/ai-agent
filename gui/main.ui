@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>920</width>
+    <height>600</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>AI 助手</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QHBoxLayout" name="mainHLayout">
+    <item>
+     <widget class="QPushButton" name="expandButton">
+      <property name="visible">
+       <bool>false</bool>
+      </property>
+      <property name="maximumWidth">
+       <number>24</number>
+      </property>
+      <property name="text">
+       <string>≫</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QWidget" name="leftPanel" native="true">
+      <property name="minimumWidth">
+       <number>190</number>
+      </property>
+      <property name="maximumWidth">
+       <number>240</number>
+      </property>
+      <layout class="QVBoxLayout" name="leftVLayout">
+       <item>
+        <widget class="QPushButton" name="collapseButton">
+         <property name="text">
+          <string>⟨ 收起会话</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="sessionLabel">
+         <property name="text">
+          <string>会话（双击重命名）</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QListWidget" name="sessionList"/>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="sessionBtnRow1">
+         <item>
+          <widget class="QPushButton" name="newSessionButton">
+           <property name="text">
+            <string>新建</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="deleteSessionButton">
+           <property name="text">
+            <string>删除</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="sessionBtnRow2">
+         <item>
+          <widget class="QPushButton" name="importButton">
+           <property name="text">
+            <string>导入</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="settingsButton">
+           <property name="text">
+            <string>设置</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QWidget" name="rightPanel" native="true">
+      <layout class="QVBoxLayout" name="rightVLayout">
+       <item>
+        <widget class="QLabel" name="inputLabel">
+         <property name="text">
+          <string>输入你的问题（回车发送）：</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="inputEdit">
+         <property name="placeholderText">
+          <string>例如：你好，介绍一下你自己</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="imageLabel">
+         <property name="text">
+          <string>网络图片（可选，多个用空格分隔，仅支持 http/https）：</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="imageEdit">
+         <property name="placeholderText">
+          <string>https://example.com/a.png https://.../b.jpg</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="buttonLayout">
+         <item>
+          <widget class="QPushButton" name="sendButton">
+           <property name="text">
+            <string>发送</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="stopButton">
+           <property name="text">
+            <string>停止</string>
+           </property>
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="clearButton">
+           <property name="text">
+            <string>清空</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="exportButton">
+           <property name="text">
+            <string>导出</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="hSpacer">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="outputLabel">
+         <property name="text">
+          <string>对话：</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QTextEdit" name="outputEdit">
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>920</width>
+     <height>26</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

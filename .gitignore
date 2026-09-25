@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+conversation.json
+conversations/
+settings.json
