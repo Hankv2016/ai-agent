@@ -156,3 +156,9 @@ py -m py_compile gui.py && py _smoke2.py
 - 启动恢复含网络图片的历史会话时，可能出现 `libpng warning: iCCP: known incorrect sRGB profile` 警告——这是远端 PNG 自带不规范的 sRGB 颜色配置文件所致，由 `QImage.loadFromData` 解码时打印，**无害**，不影响显示。程序已内置 `_strip_png_profile`：若环境装有 `Pillow` 会自动重新编码 PNG 去除 iCCP 从而消除警告；也可手动 `pip install pillow` 启用。
 - 会话文件与 `settings.json` 已被 `.gitignore` 忽略，不会进入版本库。
 - API Key 仅存放于本地 `.env`，请勿提交到仓库。
+
+## 许可证
+
+本项目以 [MIT License](LICENSE) 开源。
+
+> 依赖说明：本项目 GUI 依赖 `PyQt5`（GPL v3 或商业许可）、`openai`（MIT）等第三方库。以 MIT 发布的是本仓库自有的源代码；若分发包含 PyQt5 的二进制构建，请留意 PyQt5 自身的许可要求。
