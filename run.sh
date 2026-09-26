@@ -49,7 +49,7 @@ if [ -z "$MODE" ]; then
 fi
 
 if [ "$MODE" = "gui" ]; then
-    "$PYTHON" gui.py
+    "$PYTHON" gui.py "${@:2}"
 else
     "$PYTHON" cli.py "$@"
 fi

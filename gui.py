@@ -1,6 +1,7 @@
 # gui.py
 import os
 import sys
+import argparse
 import re
 import json
 import time
@@ -16,6 +17,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QInputDialog,
+    QDialog,
 )
 from PyQt5.QtCore import QThread, pyqtSignal, QUrl, QMetaObject, Qt, Q_ARG, pyqtSlot
 from PyQt5.QtGui import QTextCursor, QDesktopServices, QImage, QTextDocument
@@ -24,6 +26,16 @@ from client import AIClient, load_env_file
 import mdrender
 
 load_env_file()
+
+
+def _parse_gui_args(argv):
+    """解析 GUI 启动时的临时连接参数（不交给 Qt 解析，避免与 Qt 参数冲突）。"""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--api-key", dest="api_key", default=None, help="API Key")
+    p.add_argument("--base-url", dest="base_url", default=None, help="API 端点地址")
+    p.add_argument("--model", dest="model", default=None, help="模型名称")
+    return p.parse_known_args(argv)
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
@@ -106,16 +118,21 @@ class RequestThread(QThread):
     finished_ok = pyqtSignal(str, bool)  # (完整文本, 是否被用户中断)
     failed = pyqtSignal(str)
 
-    def __init__(self, prompt, history=None):
+    def __init__(self, prompt, history=None, conn=None):
         super().__init__()
         self.prompt = prompt
         self.history = history or []
+        self.conn = conn or {}
         self._stream = None
 
     def run(self):
         try:
             # 优化：直接在主线程外调用 SDK，省去每次启动 Python 子进程的开销
-            client = AIClient()
+            client = AIClient(
+                api_key=self.conn.get("api_key") or None,
+                base_url=self.conn.get("base_url") or None,
+                model=self.conn.get("model") or None,
+            )
             full = []
             self._stream = client.stream_chat(self.prompt, history=self.history)
             for delta in self._stream:
@@ -146,6 +163,12 @@ class MainWindow(QMainWindow):
 
         # ---- 设置 / 会话管理状态 ----
         self.settings = self._load_settings()
+        # 连接配置覆盖项（临时，不写 .env）：空字符串表示使用 .env/环境变量/默认值
+        self.conn = {
+            "base_url": os.environ.get("OPENAI_BASE_URL", ""),
+            "api_key": os.environ.get("OPENAI_API_KEY", ""),
+            "model": os.environ.get("OPENAI_MODEL", ""),
+        }
         self.sessions_dir = self.settings.get("autosave_dir") or DEFAULT_AUTOSAVE_DIR
         os.makedirs(self.sessions_dir, exist_ok=True)
 
@@ -313,15 +336,16 @@ class MainWindow(QMainWindow):
         self.outputEdit.setLineWrapMode(self.outputEdit.WidgetWidth)
 
     def _init_status(self):
-        base = os.environ.get("OPENAI_BASE_URL") or AIClient.DEFAULT_BASE_URL
-        model = os.environ.get("OPENAI_MODEL") or AIClient.DEFAULT_MODEL
-        if not os.environ.get("OPENAI_API_KEY"):
+        base = self.conn.get("base_url") or os.environ.get("OPENAI_BASE_URL") or AIClient.DEFAULT_BASE_URL
+        model = self.conn.get("model") or os.environ.get("OPENAI_MODEL") or AIClient.DEFAULT_MODEL
+        has_key = bool(self.conn.get("api_key") or os.environ.get("OPENAI_API_KEY"))
+        if not has_key:
             self.statusBar().showMessage(
-                "⚠ 未检测到 OPENAI_API_KEY，请配置 .env 或系统环境变量"
+                "⚠ 未检测到 API Key，请在「设置」中填写或配置 .env"
             )
         else:
             self.statusBar().showMessage(
-                f"就绪 | 模型: {model} | 保存目录: {self.sessions_dir}"
+                f"就绪 | 模型: {model} | 端点: {base} | 保存目录: {self.sessions_dir}"
             )
 
     # ---------------- 当前会话操作 ----------------
@@ -439,25 +463,40 @@ class MainWindow(QMainWindow):
         self._do_import(path)
 
     def on_settings(self):
-        d = QFileDialog.getExistingDirectory(
-            self, "选择对话自动保存目录", self.sessions_dir
-        )
-        if not d:
+        dlg = SettingDialog(self, self.conn, self.sessions_dir)
+        if dlg.exec_() != QDialog.Accepted:
             return
-        # 把内存中的会话写入新目录，并切换到新目录
-        self.sessions_dir = d
-        self.settings["autosave_dir"] = d
-        self._save_settings()
-        os.makedirs(d, exist_ok=True)
-        for sess in self.sessions.values():
-            self._write_session_file(sess)
-        self._load_sessions()
-        if not self.session_order:
-            self._create_session(persist=True)
-        else:
-            self._switch_to(self.session_order[0], redraw=True)
-        self._refresh_session_list()
-        self.statusBar().showMessage(f"自动保存目录已设为: {d}")
+        vals = dlg.get_values()
+
+        # 连接配置：写入内存覆盖项，并同步到环境变量（供状态栏/其它读取）
+        self.conn["base_url"] = vals["base_url"]
+        self.conn["api_key"] = vals["api_key"]
+        self.conn["model"] = vals["model"]
+        if vals["base_url"]:
+            os.environ["OPENAI_BASE_URL"] = vals["base_url"].rstrip("/")
+        if vals["api_key"]:
+            os.environ["OPENAI_API_KEY"] = vals["api_key"]
+        if vals["model"]:
+            os.environ["OPENAI_MODEL"] = vals["model"]
+
+        # 会话保存目录：切换后把现有会话写入新目录
+        new_dir = vals["sessions_dir"]
+        if new_dir and new_dir != self.sessions_dir:
+            self.sessions_dir = new_dir
+            self.settings["autosave_dir"] = new_dir
+            self._save_settings()
+            os.makedirs(new_dir, exist_ok=True)
+            for sess in self.sessions.values():
+                self._write_session_file(sess)
+            self._load_sessions()
+            if not self.session_order:
+                self._create_session(persist=True)
+            else:
+                self._switch_to(self.session_order[0], redraw=True)
+            self._refresh_session_list()
+
+        self._init_status()
+        self.statusBar().showMessage("设置已更新")
 
     def on_export(self):
         ts = time.strftime("%Y%m%d_%H%M%S")
@@ -677,9 +716,12 @@ class MainWindow(QMainWindow):
     def _set_busy(self, busy):
         self.sendButton.setEnabled(not busy)
         self.stopButton.setEnabled(busy)
-        self.inputEdit.setEnabled(not busy)
+        # 用只读代替禁用，避免禁用后 Qt 把焦点转移到 imageEdit（网络图片框）
+        self.inputEdit.setReadOnly(busy)
         self.newSessionButton.setEnabled(not busy)
         self.deleteSessionButton.setEnabled(not busy)
+        # 始终让焦点停留在消息输入框：忙碌时保持可聚焦（只读），空闲时恢复可编辑
+        self.inputEdit.setFocus()
 
     # ---------------- 槽函数：对话 ----------------
     def on_send(self):
@@ -703,7 +745,7 @@ class MainWindow(QMainWindow):
             self._set_busy(True)
             self.statusBar().showMessage("正在请求...")
 
-            self.thread = RequestThread(user_content, self._current_messages())
+            self.thread = RequestThread(user_content, self._current_messages(), self.conn)
             self.thread.chunk.connect(self._on_chunk)
             self.thread.finished_ok.connect(self._on_success)
             self.thread.failed.connect(self._on_error)
@@ -760,8 +802,49 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("已清空当前会话")
 
 
+class SettingDialog(QDialog):
+    """连接与目录设置对话框（方案 2：运行时临时覆盖，不写 .env）。"""
+
+    def __init__(self, parent=None, conn=None, sessions_dir=None):
+        super().__init__(parent)
+        ui_path = os.path.join(BASE_DIR, "gui", "setting.ui")
+        uic.loadUi(ui_path, self)
+        conn = conn or {}
+        self.baseUrlEdit.setText(conn.get("base_url") or "")
+        self.apiKeyEdit.setText(conn.get("api_key") or "")
+        self.modelEdit.setText(conn.get("model") or "")
+        self.dirEdit.setText(sessions_dir or "")
+        self.browseButton.clicked.connect(self._browse)
+
+    def _browse(self):
+        d = QFileDialog.getExistingDirectory(
+            self, "选择会话保存目录", self.dirEdit.text() or os.getcwd()
+        )
+        if d:
+            self.dirEdit.setText(d)
+
+    def get_values(self):
+        return {
+            "base_url": self.baseUrlEdit.text().strip(),
+            "api_key": self.apiKeyEdit.text().strip(),
+            "model": self.modelEdit.text().strip(),
+            "sessions_dir": self.dirEdit.text().strip(),
+        }
+
+
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
+    # 方案 1：GUI 启动支持临时连接参数（覆盖 .env/环境变量），仅本次进程有效
+    _known, _unknown = _parse_gui_args(sys.argv[1:])
+    if _known.api_key:
+        os.environ["OPENAI_API_KEY"] = _known.api_key
+    if _known.base_url:
+        os.environ["OPENAI_BASE_URL"] = _known.base_url.rstrip("/")
+    if _known.model:
+        os.environ["OPENAI_MODEL"] = _known.model
+    # 过滤掉已消费的自定义参数，避免传给 Qt 导致 "Unknown option"
+    _filtered_argv = [sys.argv[0]] + list(_unknown)
+
+    app = QApplication(_filtered_argv)
 
     def _excepthook(exc_type, exc_value, exc_tb):
         import traceback

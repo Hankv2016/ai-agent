@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SettingDialog</class>
+ <widget class="QDialog" name="SettingDialog">
+  <property name="windowTitle">
+   <string>设置</string>
+  </property>
+  <property name="minimumWidth">
+   <number>460</number>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="hintLabel">
+     <property name="text">
+      <string>以下连接设置仅对本次运行生效（不写入 .env），留空则使用 .env / 环境变量中的值。</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QFormLayout" name="formLayout">
+     <item row="0" column="0">
+      <widget class="QLabel" name="baseUrlLabel">
+       <property name="text">
+        <string>API Base URL</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLineEdit" name="baseUrlEdit">
+       <property name="placeholderText">
+        <string>https://api.openai.com/v1</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="apiKeyLabel">
+       <property name="text">
+        <string>API Key</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QLineEdit" name="apiKeyEdit">
+       <property name="echoMode">
+        <enum>QLineEdit::Password</enum>
+       </property>
+       <property name="placeholderText">
+        <string>sk-...（留空则用环境变量）</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="modelLabel">
+       <property name="text">
+        <string>Model</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QLineEdit" name="modelEdit">
+       <property name="placeholderText">
+        <string>gpt-4o-mini</string>
+       </property>
+      </widget>
+     </item>
+     <item row="3" column="0">
+      <widget class="QLabel" name="dirLabel">
+       <property name="text">
+        <string>会话保存目录</string>
+       </property>
+      </widget>
+     </item>
+     <item row="3" column="1">
+      <layout class="QHBoxLayout" name="dirLayout">
+       <item>
+        <widget class="QLineEdit" name="dirEdit"/>
+       </item>
+       <item>
+        <widget class="QPushButton" name="browseButton">
+         <property name="text">
+          <string>浏览...</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
