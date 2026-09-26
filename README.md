@@ -32,7 +32,8 @@
 ├── mdrender.py       # Markdown -> HTML 渲染
 ├── gui/
 │   └── main.ui       # Qt Designer 界面布局
-├── run.bat           # Windows 一键启动（选 GUI / CLI，自动加载 .env）
+├── run.cmd           # Windows 启动脚本（依赖检查 + 选 GUI/CLI + 参数透传）
+├── run.sh            # Linux/macOS 启动脚本（同上）
 ├── _smoke2.py        # 回归冒烟测试（offscreen，无需网络）
 ├── conversations/    # 自动保存的会话（已被 .gitignore 忽略）
 ├── settings.json     # 用户设置：自动保存目录等（已被忽略）
@@ -60,28 +61,47 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o
 ```
 
-> `run.bat` 会在每次启动时自动把 `.env` 加载为环境变量，改完即时生效，无需重启终端。
+> `run.cmd` 会在每次启动时自动把 `.env` 加载为环境变量，改完即时生效，无需重启终端。
 
 ## 使用
 
-### 图形界面（推荐）
+### 启动脚本（自动检查依赖）
+
+项目提供跨平台启动脚本，运行前会**自动检测 `PyQt5` / `openai`**，缺失则提示并安装：
+
+- **Windows**：`run.cmd`
+- **Linux / macOS**：先赋可执行权限 `chmod +x run.sh`，再 `./run.sh`
+
+无参数运行会交互式选择 GUI / CLI 模式。
+
+### 图形界面
 
 ```bash
-run.bat          # 选择 1 启动 GUI
+run.cmd gui          # Windows
+./run.sh gui         # Linux / macOS
 # 或直接：
 py gui.py
 ```
 
-### 命令行
+### 命令行（参数透传）
+
+启动脚本会把参数直接透传给 `cli.py`，支持 `-m/--model`、`-u/--base-url`、`-k/--api-key`、`-i/--interactive` 及问题文本：
 
 ```bash
-run.bat          # 选择 2 进入 CLI 交互
-# 或：
-py cli.py -i                       # 交互模式
-py cli.py "用一句话解释量子纠缠"     # 单次问答
+# 交互模式
+run.cmd -i
+./run.sh -i
+
+# 单次问答
+run.cmd "用一句话解释量子纠缠"
+./run.sh "用一句话解释量子纠缠"
+
+# 临时覆盖模型 / API Key
+run.cmd -m gpt-4 -k sk-xxx "你好"
+./run.sh -m gpt-4 -k sk-xxx "你好"
 ```
 
-CLI 还支持 `-m/--model`、`-u/--base-url`、`-k/--api-key` 临时覆盖配置。
+> 提示：Windows 下若要显式指定 `cli` 前缀可用 `run.cmd cli -i`；直接传 CLI 参数（如上）即可，无需写 `cli` 关键字。Linux/macOS 下 `./run.sh cli -i` 同样支持。
 
 ## 图片 / 多模态
 
