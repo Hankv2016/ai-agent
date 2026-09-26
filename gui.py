@@ -18,6 +18,10 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QInputDialog,
     QDialog,
+    QListWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
 )
 from PyQt5.QtCore import QThread, pyqtSignal, QUrl, QMetaObject, Qt, Q_ARG, pyqtSlot
 from PyQt5.QtGui import QTextCursor, QDesktopServices, QImage, QTextDocument
@@ -179,6 +183,7 @@ class MainWindow(QMainWindow):
 
         # ---- 对话显示状态 ----
         self.thread = None
+        self._queue = []   # 忙碌时排队的用户消息（user_content 列表）
         self._buf = ""
         self._ai_doc_pos = None
         self._last_render = 0.0
@@ -315,6 +320,8 @@ class MainWindow(QMainWindow):
 
     def _bind_widgets(self):
         self.sendButton.clicked.connect(self.on_send)
+        self.sendButton.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.sendButton.customContextMenuRequested.connect(self._on_send_button_menu)
         self.stopButton.clicked.connect(self.on_stop)
         self.clearButton.clicked.connect(self.on_clear)
         self.exportButton.clicked.connect(self.on_export)
@@ -659,11 +666,28 @@ class MainWindow(QMainWindow):
         self._img_downloading.add(key)
         threading.Thread(target=self._fetch_image, args=(url, key), daemon=True).start()
 
+    @staticmethod
+    def _strip_png_profile(data):
+        """用 Pillow 重新编码 PNG 以去除不规范的 iCCP profile，消除 libpng 警告。
+        无 Pillow 时原样返回（警告无害）。"""
+        try:
+            from PIL import Image
+            import io
+            im = Image.open(io.BytesIO(data))
+            if im.format == "PNG":
+                buf = io.BytesIO()
+                im.save(buf, format="PNG", icc_profile=None)
+                return buf.getvalue()
+        except Exception:
+            pass
+        return data
+
     def _fetch_image(self, url, key):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=20) as resp:
                 data = resp.read()
+            data = self._strip_png_profile(data)
             img = QImage()
             if img.loadFromData(data) and not img.isNull():
                 self._img_data[key] = img
@@ -714,18 +738,18 @@ class MainWindow(QMainWindow):
 
     # ---------------- 状态切换 ----------------
     def _set_busy(self, busy):
-        self.sendButton.setEnabled(not busy)
         self.stopButton.setEnabled(busy)
-        # 用只读代替禁用，避免禁用后 Qt 把焦点转移到 imageEdit（网络图片框）
-        self.inputEdit.setReadOnly(busy)
         self.newSessionButton.setEnabled(not busy)
         self.deleteSessionButton.setEnabled(not busy)
-        # 始终让焦点停留在消息输入框：忙碌时保持可聚焦（只读），空闲时恢复可编辑
+        # 输入框始终保持可编辑（不禁止）；忙碌时发送按钮变为"排队"
+        self._refresh_send_button()
         self.inputEdit.setFocus()
 
     # ---------------- 槽函数：对话 ----------------
     def on_send(self):
         if self.thread is not None and self.thread.isRunning():
+            # 正在请求中：把当前输入加入排队队列，点"排队"按钮即入队
+            self._enqueue_current()
             return
         try:
             prompt = self.inputEdit.text().strip()
@@ -738,23 +762,40 @@ class MainWindow(QMainWindow):
 
             self.inputEdit.clear()
             self.imageEdit.clear()
-            self._pending_user_content = user_content
-            self._append_user(user_content)
-            self._begin_ai()
-            self._buf = ""
-            self._set_busy(True)
-            self.statusBar().showMessage("正在请求...")
-
-            self.thread = RequestThread(user_content, self._current_messages(), self.conn)
-            self.thread.chunk.connect(self._on_chunk)
-            self.thread.finished_ok.connect(self._on_success)
-            self.thread.failed.connect(self._on_error)
-            self.thread.finished.connect(self.thread.deleteLater)
-            self.thread.start()
+            self._dispatch(user_content)
         except Exception as e:
             import traceback
             self._set_busy(False)
             QMessageBox.critical(self, "发送失败", traceback.format_exc()[-2000:])
+
+    def _dispatch(self, user_content):
+        """真正发起一次请求（发送或自动发送排队消息共用）。"""
+        self._pending_user_content = user_content
+        self._append_user(user_content)
+        self._begin_ai()
+        self._buf = ""
+        self._set_busy(True)
+        self.statusBar().showMessage("正在请求...")
+        self.thread = RequestThread(user_content, self._current_messages(), self.conn)
+        self.thread.chunk.connect(self._on_chunk)
+        self.thread.finished_ok.connect(self._on_success)
+        self.thread.failed.connect(self._on_error)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    def _enqueue_current(self):
+        """忙碌时把当前输入框内容加入排队队列。"""
+        prompt = self.inputEdit.text().strip()
+        urls = self._parse_image_urls(self.imageEdit.text())
+        if not prompt and not urls:
+            self.statusBar().showMessage("输入框为空，没有可排队的内容")
+            return
+        user_content = self._build_user_content(prompt, urls)
+        self._queue.append(user_content)
+        self.inputEdit.clear()
+        self.imageEdit.clear()
+        self.statusBar().showMessage(f"已加入排队，队列共 {len(self._queue)} 条")
+        self._refresh_send_button()
 
     def _on_chunk(self, delta):
         self._buf += delta
@@ -776,6 +817,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("已停止（可继续提问）" if stopped else "完成")
         self._buf = ""
         self.thread = None
+        self._maybe_send_queued()
 
     def _on_error(self, err):
         if self._buf:
@@ -785,6 +827,35 @@ class MainWindow(QMainWindow):
         self._buf = ""
         self.thread = None
         QMessageBox.critical(self, "请求出错", err)
+        self._maybe_send_queued()
+
+    def _maybe_send_queued(self):
+        """上一条请求结束后，自动发送排队的第一条消息。"""
+        if self._queue:
+            item = self._queue.pop(0)
+            self._refresh_send_button()
+            self.statusBar().showMessage(
+                f"自动发送排队消息（剩余 {len(self._queue)} 条）"
+            )
+            self._dispatch(item)
+
+    def _refresh_send_button(self):
+        """根据忙碌状态与排队数量刷新发送/排队按钮文案。"""
+        if self.thread is not None and self.thread.isRunning():
+            n = len(self._queue)
+            self.sendButton.setText(f"排队({n})" if n else "排队")
+        else:
+            self.sendButton.setText("发送")
+        self.sendButton.setEnabled(True)
+
+    def _on_send_button_menu(self, pos):
+        """右键发送按钮：查看/取消排队消息。"""
+        d = QueueDialog(self, self._queue)
+        d.exec_()
+        for x in d._to_remove:
+            if x in self._queue:
+                self._queue.remove(x)
+        self._refresh_send_button()
 
     def on_stop(self):
         if self.thread is not None and self.thread.isRunning():
@@ -830,6 +901,62 @@ class SettingDialog(QDialog):
             "model": self.modelEdit.text().strip(),
             "sessions_dir": self.dirEdit.text().strip(),
         }
+
+
+class QueueDialog(QDialog):
+    """查看/取消排队消息（双击条目删除，可清空全部）。"""
+
+    def __init__(self, parent=None, queue=None):
+        super().__init__(parent)
+        self.setWindowTitle("排队消息")
+        self.queue = queue if queue is not None else []
+        self._to_remove = []
+        self._visible = []
+        layout = QVBoxLayout(self)
+        self.list_widget = QListWidget(self)
+        self.list_widget.setToolTip("双击条目可删除")
+        self.list_widget.itemDoubleClicked.connect(self._delete_item)
+        layout.addWidget(self.list_widget)
+        btn_row = QHBoxLayout()
+        self.clear_btn = QPushButton("清空全部")
+        self.close_btn = QPushButton("关闭")
+        self.clear_btn.clicked.connect(self._clear_all)
+        self.close_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self.clear_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(self.close_btn)
+        layout.addLayout(btn_row)
+        self._fill()
+
+    @staticmethod
+    def _preview(content):
+        if isinstance(content, str):
+            return content
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif block.get("type") == "image_url":
+                    parts.append("[图片]")
+        return "\n".join(parts)
+
+    def _fill(self):
+        self.list_widget.clear()
+        self._visible = [c for c in self.queue if c not in self._to_remove]
+        for i, item in enumerate(self._visible):
+            prev = self._preview(item).replace("\n", " ")
+            self.list_widget.addItem(f"{i + 1}. {prev[:80]}")
+
+    def _delete_item(self, item):
+        idx = self.list_widget.row(item)
+        if 0 <= idx < len(self._visible):
+            self._to_remove.append(self._visible[idx])
+            self._fill()
+
+    def _clear_all(self):
+        self._to_remove = list(self.queue)
+        self._fill()
 
 
 if __name__ == "__main__":
